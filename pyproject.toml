@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finn-deals"
+version = "0.0.1"
+description = "Scraper and price predictor of adverts for Finn.no"
+authors = [
+    { name = "William V. Soma", email = "william.v.soma@gmail.com" }
+]
+readme = "README.md"
+license = "LicenseRef-Proprietary"
+requires-python = ">=3.13.7"
+
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"]}
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "black>=24.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8.0",
+    "nbstripout",
+    "jupyter"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fin_deals*"]
+
+
+[tool.pytest.ini_options]
+addopts = "-v --tb=short --maxfail=1"
+testpaths = ["tests"]
+
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+fix = true
+
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict_optional = true
+disallow_untyped_defs = true
