@@ -1,6 +1,5 @@
 import argparse
 import joblib
-import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -10,30 +9,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from finn import FinnAPI
+from finn_deals.features import prepare_dataframe
+from finn_deals.scraping.finn import FinnAPI
 
 
 def fetch_listings(query: str, pages: int) -> pd.DataFrame:
     api = FinnAPI()
     df = api.search_dataframe(query, max_pages=pages, include_raw=False)
     return df
-
-
-def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    clean = df.copy()
-    clean = clean[clean["price_amount"].notna()]
-
-    clean["text"] = (
-        clean["title"].fillna("") + " " + clean["location"].fillna("")
-    ).str.strip()
-
-    ts = pd.to_datetime(clean["timestamp"], errors="coerce")
-    ts_seconds = ts.astype("int64", copy=False) / 1e9
-    ts_seconds = ts_seconds.where(~ts.isna(), np.nan)
-    median_ts = ts_seconds.dropna().median()
-    clean["timestamp_val"] = ts_seconds.fillna(median_ts)
-
-    return clean
 
 
 def build_pipeline(model_type: str = "ridge") -> Pipeline:

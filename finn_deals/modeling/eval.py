@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
 
-from train_price_model import fetch_listings, prepare_dataframe
+from finn_deals.features import prepare_dataframe
+from finn_deals.modeling.train import fetch_listings
 
 
 def load_model(path: str):

@@ -1,8 +1,9 @@
 import argparse
+from pathlib import Path
 import pandas as pd
 
-from finn import FinnAPI
-from train_price_model import prepare_dataframe
+from finn_deals.features import prepare_dataframe
+from finn_deals.scraping.finn import FinnAPI
 
 
 def collect_data(query: str, pages: int, output: str, prepared_output: str | None):
@@ -11,13 +12,17 @@ def collect_data(query: str, pages: int, output: str, prepared_output: str | Non
     if df.empty:
         raise SystemExit("No data fetched; adjust query or page count.")
 
-    df.to_csv(output, index=False)
-    print(f"Saved raw scrape ({len(df)} rows) to {output}")
+    raw_path = Path(output)
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(raw_path, index=False)
+    print(f"Saved raw scrape ({len(df)} rows) to {raw_path}")
 
     if prepared_output:
         prepped = prepare_dataframe(df)
-        prepped.to_csv(prepared_output, index=False)
-        print(f"Saved prepared dataset ({len(prepped)} rows) to {prepared_output}")
+        processed_path = Path(prepared_output)
+        processed_path.parent.mkdir(parents=True, exist_ok=True)
+        prepped.to_csv(processed_path, index=False)
+        print(f"Saved prepared dataset ({len(prepped)} rows) to {processed_path}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,12 +38,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="listings_raw.csv",
+        default="data/raw/listings_raw.csv",
         help="Path to save raw scraped data.",
     )
     parser.add_argument(
         "--prepared-output",
-        default=None,
+        default="data/processed/listings_prepared.csv",
         help="Optional path to also save the prepared dataset (with engineered features).",
     )
     return parser.parse_args()

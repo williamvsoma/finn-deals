@@ -214,3 +214,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Data and model artifacts (keep folder structure via .gitkeep)
+data/**
+!data/**/.gitkeep
+models/**
+!models/**/.gitkeep

@@ -31,7 +31,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["fin_deals*"]
+include = ["finn_deals*"]
 
 
 [tool.pytest.ini_options]
