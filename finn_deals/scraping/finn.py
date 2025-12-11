@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
-import time, random
+import time
 import logging
-
+import math
 logger = logging.getLogger('search.client')
 
 @dataclass
@@ -136,26 +136,38 @@ class FinnAPI:
                 break
             
             # Adding a polite delay :) 
-            time.sleep(random.uniform(1.5, 4.0)) 
+            time.sleep(1)
             page += 1
             
     def _auto_shard_price_ranges(self, query: str, price_min: int, price_max: int, **params):
             '''
             Split the search into multiple price ranges as a workaround to avoid hitting the search limit in FINN
             '''
-            
-            first_page = self.search(query=query, page=1, price_from=price_min, price_to=price_max, **params)
-            
-            if first_page.total_matches <= self.MAX_PUBLIC_RESULTS:
+            # Chat gpt stuff. Dont really understand it yet
+            first = self.search(query=query, page=1, price_from=price_min, price_to=price_max, **params)
+            total = first.total_matches
+            if total <= self.MAX_PUBLIC_RESULTS:
                 return [(price_min, price_max)]
                 
-            # result is too large, spit the range
-            mid = (price_min + price_max) // 2
-            
-            left_ranges = self._auto_shard_price_ranges(query, price_min, mid, **params)
-            right_ranges = self._auto_shard_price_ranges(query, mid + 1, price_max, **params)
-    
-            return left_ranges + right_ranges
+            num_shards = max(2, math.ceil(total / self.MAX_PUBLIC_RESULTS)) # This will never be above 2...
+            step = max(1, (price_max - price_min + 1) // num_shards) 
+            ranges = []
+            lo = price_min
+            while lo <= price_max:
+                hi = min(price_max, lo + step - 1)
+                ranges.append((lo, hi))
+                lo = hi + 1
+
+            final = []
+            for lo, hi in ranges:
+                probe = self.search(query=query, page=1, price_from=lo, price_to=hi, **params)
+                if probe.total_matches <= self.MAX_PUBLIC_RESULTS:
+                    final.append((lo, hi))
+                else:
+                    mid = (lo + hi) // 2
+                    final.extend(self._auto_shard_price_ranges(query, lo, mid, **params))
+                    final.extend(self._auto_shard_price_ranges(query, mid + 1, hi, **params))
+            return final
         
     def search_dataframe_sharded(
         self,
