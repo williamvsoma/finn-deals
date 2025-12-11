@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
+import time, random
+import logging
 
+logger = logging.getLogger('search.client')
 
 @dataclass
 class Listing:
@@ -83,13 +86,27 @@ class FinnAPI:
     def __init__(self, session: Optional[requests.Session] = None):
         self.session = session or requests.Session()
         self.session.headers.setdefault("User-Agent", "finn-scraper/0.1")
+        self.MAX_PUBLIC_RESULTS = 2000 # approximate cap for FINN search results
 
-    def search(self, query: str, page: int = 1, **params: Any) -> SearchResult:
+    def search(self, query: str, page: int = 1, price_from: Optional[int] = None, price_to: Optional[int] = None, **params: Any) -> SearchResult:
         """
         Run a search against FINN Torget and return parsed listings.
         Accepts the same params as the web UI (e.g. page, q, price_from, price_to).
         """
         query_params = {"q": query, "page": page}
+        
+        if price_from is not None or price_to is not None:
+            logger.info(
+                "Search price range: from=%s, to=%s",
+                price_from if price_from is not None else "not set",
+                price_to if price_to is not None else "not set",
+            )
+        # Update query params to include price range if provided
+        if price_from is not None:
+            query_params["price_from"] = price_from
+        if price_to is not None:
+            query_params["price_to"] = price_to
+            
         query_params.update({k: v for k, v in params.items() if v is not None})
 
         resp = self.session.get(
@@ -107,6 +124,7 @@ class FinnAPI:
         """
         page = 1
         while True:
+            
             result = self.search(query=query, page=page, **params)
             yield result
 
@@ -116,10 +134,83 @@ class FinnAPI:
 
             if should_stop:
                 break
+            
+            # Adding a polite delay :) 
+            time.sleep(random.uniform(1.5, 4.0)) 
             page += 1
-
+            
+    def _auto_shard_price_ranges(self, query: str, price_min: int, price_max: int, **params):
+            '''
+            Split the search into multiple price ranges as a workaround to avoid hitting the search limit in FINN
+            '''
+            
+            first_page = self.search(query=query, page=1, price_from=price_min, price_to=price_max, **params)
+            
+            if first_page.total_matches <= self.MAX_PUBLIC_RESULTS:
+                return [(price_min, price_max)]
+                
+            # result is too large, spit the range
+            mid = (price_min + price_max) // 2
+            
+            left_ranges = self._auto_shard_price_ranges(query, price_min, mid, **params)
+            right_ranges = self._auto_shard_price_ranges(query, mid + 1, price_max, **params)
+    
+            return left_ranges + right_ranges
+        
+    def search_dataframe_sharded(
+        self,
+        query: str,
+        price_min: int = 0,
+        price_max: int = 1_000_000,
+        include_raw: bool = False,
+        **params
+    ):
+        '''
+        Fetch multiple pages and return a single pandas DataFrame, splitting the search into price ranges as a potential workaround
+        '''
+        
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "Install pandas to use to_dataframe(), e.g. pip install pandas"
+            ) from exc
+        
+        ranges = self._auto_shard_price_ranges(query, price_min, price_max, **params)
+        
+        frames = []
+        for low, high in ranges:
+            df = self.search_dataframe(
+                query=query,
+                price_from=low,
+                price_to=high,
+                include_raw=include_raw,
+                **params
+            )
+            if not df.empty:
+                frames.append(df)
+                
+        
+        if not frames:
+            return pd.DataFrame()
+        
+        # Combine the dataframes and drop duplicates
+        
+        combined_df = pd.concat(frames, ignore_index=True)
+        
+        if 'id' in combined_df.columns:
+            combined_df = combined_df.drop_duplicates(subset=['id'])
+            
+        return combined_df
+        
+    
     def search_dataframe(
-        self, query: str, max_pages: Optional[int] = None, include_raw: bool = False, **params: Any
+        self, 
+        query: str, 
+        max_pages: Optional[int] = None, 
+        price_from: Optional[int] = None,
+        price_to: Optional[int] = None,
+        include_raw: bool = False, **params: Any
     ):
         """
         Fetch multiple pages and return a single pandas DataFrame.
@@ -132,7 +223,7 @@ class FinnAPI:
             ) from exc
 
         frames = []
-        for result in self.iter_search(query=query, max_pages=max_pages, **params):
+        for result in self.iter_search(query=query, max_pages=max_pages, price_from=price_from, price_to=price_to, **params):
             df = result.to_dataframe(include_raw=include_raw)
             if not df.empty:
                 frames.append(df)
