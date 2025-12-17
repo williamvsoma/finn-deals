@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import time
@@ -180,13 +181,6 @@ class FinnAPI:
         '''
         Fetch multiple pages and return a single pandas DataFrame, splitting the search into price ranges as a potential workaround
         '''
-        
-        try:
-            import pandas as pd
-        except ImportError as exc:
-            raise ImportError(
-                "Install pandas to use to_dataframe(), e.g. pip install pandas"
-            ) from exc
         
         ranges = self._auto_shard_price_ranges(query, price_min, price_max, **params)
         
