@@ -170,7 +170,7 @@ class FinnScraper(GetWebPageHtml):
             
             responses.extend(self.JSON_LD_parser(response))
             query_params['page'] += 1
-            
+        # TODO: Parse responses and decide the structure of the data that will be returned 
         parsed_responses = 
         return responses
                 
