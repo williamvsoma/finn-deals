@@ -1,8 +1,5 @@
-import time
 import requests
 from bs4 import BeautifulSoup
-
-from datetime import datetime
 
 import json
 
@@ -31,24 +28,15 @@ def parse_price(price_str):
 
     return int("".join(digits))
 
+
+
 # Currently not used
 BASE_URL = "https://www.finn.no/"
 SEARCH_PATH = "recommerce/forsale/search"
 
-
-
-class Extractor(Protocol):
+class Scraper(Protocol):
     def extract(self) -> Data:
-        ...
-        
-class Transformer(Protocol):
-    def transform(self, data) -> Data:
-        ...
-        
-class Parser(Protocol):
-    def parse(self, response) -> list[dict[str, str | int]]:
-        ...
-        
+        ...   
 class Exporter(Protocol):
     def export(self, data) -> None:
         ...
@@ -57,9 +45,9 @@ class Exporter(Protocol):
 class GetWebPageHtml:
     def __init__(self) -> None:
         self.scrape_date: str = str
-        session = requests.Session()
+        self.session = requests.Session()
         # Try to fool Finn, not sure it is working
-        session.headers.update({ 
+        self.session.headers.update({ 
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -89,96 +77,144 @@ class GetWebPageHtml:
             params=query_params,
             timeout=15
         )
-        
-        res.raise_for_status()
+        try:
+            res.raise_for_status()
+        except:
+            return None
         
         return res
     
 # Inherits a post_query method and a requests session
-class FinnScraper(GetWebPageHtml):
+class FinnTorgetScraper(GetWebPageHtml):
     BASE_URL = "https://www.finn.no/"
     SEARCH_PATH_TORGET = "recommerce/forsale/search"
     URL: str = str # Will be set depending on what search method is used
     
-    TORGET_SEARCH_PARAMS: dict[str, str|int] = {
+    TORGET_SEARCH_PARAMS: dict[str, str|int] = {} 
+    
+    def __init__(self):
+        # Initialise parsers
+        self.html_parsers = {
+            'JSON_LD_parser' : HtmlResponseParserAsJSON(),
+            'DOM_parser' : HtmlResponseParserSelect()}
+        
+        # Select parser
+        self.selected_parser : object = None # Must be set before 
+        
+        # Store parsed results
+        self.JSON_LD_responses: list[dict[str, Any]] = []
+        self.DOM_responses: list[dict[str, Any]] = []
+        
+        super().__init__() 
+        
+    
+    
+        
+        
+    # New scrape method:
+    def scrape(self, search_word: str, parser: str = "JSON_LD_parser") -> list[dict]:
+        url = f"{self.BASE_URL}{self.SEARCH_PATH_TORGET}"
+
+        self.TORGET_SEARCH_PARAMS.update({
+            "q": search_word,
+            "page": 1,
+            "price_from": None,
+            "sort": "PRICE_ASC"
+        })
+        
+        '''
         'q' : str,
         'page': 1,
         'sort': "PRICE_ASC", # RELEVANCE, PUBLISHED_ASC, PUBLISHED_DESC, PRICE_DESC, PRICE_ASC
         'price_from' : int, # Will this be interpreted as an empty field if it is passed as query parameter?
         'price_to': int,
         'trade_type': int # 1= Til salgs, 2=Gis bort, 3=Ønskes kjøpt
-    } 
-    
-    def __init__(self):
-        # Initialise parsers
-        self.JSON_LD_parser = HtmlResponseParserAsJSON()
-        self.DOM_parser = HtmlResponseParserSelect()
-        
-        # Store parsed results
-        self.JSON_LD_responses: list[dict[str, Any]] = []
-        self.DOM_responses: list[dict[str, Any]] = []
-    
+        '''
 
-    def search_torget(self, search_word: str) -> Dataframe:
-        # Method for handling a search to torget
-        
-        url = f"{self.BASE_URL}{self.SEARCH_PATH_TORGET}"
-        
-        self.TORGET_SEARCH_PARAMS['q'] = search_word
-        
-        # TODO: Should i construct the query parameters first, or try to construct them somewhat dynamically to ensure all the listing are retrieved?
-        
-        # What about parsing all the listing from the lowest price and ascending. When the crawler stops, retrieve the price of the last item and use this price (minus 1) as the starting price for the next crawl. Then check for duplicated saved entries at the end
-        
-        query_params = self.TORGET_SEARCH_PARAMS
-        
-        # TODO: Implement search
-        
-        # Initial crawl
-        responses = 
-        
+        # Select parser
+        try:
+            self.selected_parser = self.html_parsers[parser]
+        except KeyError:
+            raise KeyError("Parser must be JSON_LD_parser or DOM_parser")
+
+        seen: set[str] = set()
+        results: list[dict] = []
+
+        # The idea is to incrementally increase the starting price until there are no more items left in the response
+        # The crawl stops after a set of empty returns. An empty return could also just be an automatic stop
+        price_from = 0
+        MAX_EMPTY_WINDOWS = 3
+        empty_windows = 0
+
+        while empty_windows < MAX_EMPTY_WINDOWS:
+            self.TORGET_SEARCH_PARAMS.update({
+                "price_from": price_from,
+                "page": 1,
+            })
+
+            window_items = []
+
+            for item in self.page_crawler(url, self.TORGET_SEARCH_PARAMS):
+                window_items.append(item)
+                results.append(item)
+
+            if not window_items:
+                empty_windows += 1
+                continue
+
+            empty_windows = 0
+
+            # Advance price window 
+            if parser == 'JSON_LD_parser':
+                last_price: str = window_items[-1]['offers'].get("price")
+            
+            elif parser == 'DOM_parser':
+                last_price: str = window_items[-1].get("price")
+
+            price_from = int(last_price) + 1
+            print(f"Advancing price window from {last_price} to {price_from}. Found {len(window_items)} items this round. Empty windows: {empty_windows} ")
+
+        return results
+
     def handle_search(self, url):
         # TODO: Implement search
         pass
     
-    def page_crawler(self, url: str, query_params: dict[str, str|int]) -> list[object] :
-        
-        '''
-        Docstring for page_crawler
-        
-        :param self: Description
-        :param url: Description
-        :type url: str
-        :param query_params: Description
-        :type query_params: dict[str, str | int]
-        :return: list of response objects
-        :rtype: list[object]
-        '''
-        
-        # method for crawling the pages based on the other search parameters
-        
-        responses: list[dict[str, str | int]] = []
-        condition = True
-        while condition:
-            
-            try: # Should stop when the max page limit is reached
-                response = self.post_query(url=url, query_params=query_params)
-            except:# TODO: Currently stops at page 50. My browser also stops at 50 and tells me to narrow down my search
-                print(f"Got bad response, stopping crawl at page {query_params['page']}")
-                condition = False
-                
-            
-            responses.extend(self.JSON_LD_parser(response))
-            query_params['page'] += 1
-        # TODO: Parse responses and decide the structure of the data that will be returned 
-        parsed_responses = 
-        return responses
-                
-                
-            
-    
-    
+    def page_crawler(
+        self,
+        url: str,
+        query_params: dict[str, str | int],
+    ):
+        """
+        Iterates over pages and yields individual items.
+        Stops when:
+        - no items are returned
+        - max_pages is reached
+        """
 
+        page = 0
+
+        while True:
+            response = self.post_query(url=url, query_params=query_params)
+            if not response:
+                return
+            items = self.selected_parser.parse(response)
+
+            if not items:
+                return
+
+            for item in items:
+                yield item
+
+            page += 1
+            query_params["page"] = page
+            
+                
+        
+            
+    
+    
+# ---------------- Html Parsers ----------------------------------------# 
 class HtmlResponseParserAsJSON:
     # Class that parses the Html response by targeting "script#seoStructuredData" in the html response
     def parse(self, response: object) -> list[dict[str, str | int]]:  # but document JSON-LD structure. TODO: Implement protocol
@@ -191,18 +227,34 @@ class HtmlResponseParserAsJSON:
             return []        
         
         
-        data_raw = script.string or script.get_text() # Some sites can be text
+        data_raw = script.string 
+        if not data_raw:
+            print("WARNING: No raw data from script")
         
-        data = json.loads(data_raw)
+        try:
+            data = json.loads(data_raw)
+        except:
+            print("Failed to load script text to JSON")
+            print(data_raw)
+            return []
         
+        if not data_raw or not data_raw.strip():
+            print("WARNING: seoStructuredData is empty")
+            return []
+
+        try:
+            data = json.loads(data_raw)
+        except json.JSONDecodeError as e:
+            print("WARNING: Invalid JSON-LD:", e)
+            return []
+
         items_json = data["mainEntity"].get("itemListElement", [])
+        if not items_json:
+            print(f'Found no data in the response items json file. Items: {items_json}')
+            return []
         
         # Add date scraped metadata
-
         items = [item['item'] for item in items_json] # Returns only the items in each article, not everything else
-        
-        if not items_json:
-            raise ValueError(f'Found no data in the response items json file. Items: {items_json}')
         
         return items
     
@@ -261,20 +313,17 @@ class JSONExporter:
 
 # Controller class for executing the actions in the right order
 # TODO: Make sure all classes are speaking the same language
-class DataPipelineListings:
-    def __init__(self, extractor: Extractor, parser: Parser, transformer: Transformer, exporter: Exporter):
-        self.extractor = extractor
-        self.transformer = transformer
+class DataPipeline:
+    def __init__(self, scraper: Scraper, exporter: Exporter):
+        self.scraper = scraper
         self.exporter = exporter
 
-    def run(self) -> None:
-        # Extract: Extract the listed items from finn.no
-        
-        # Transform: Filter out the data we want. Price, pictures, name, links to the listed item
+    def run_scrape_listings(self, search_word: str) -> None:
+        # Scrape: Extract the listed items from finn.no
+        data = self.scraper.scrape(search_word=search_word)
         
         # Export: Export the cleaned data 
-        pass
-        
+        self.exporter.export(data)
 
 
 
@@ -292,7 +341,7 @@ class Container: # Register all the different classes/components in this contain
         if name in self._singletons:
             return self._providers[name]
         
-        if name not in self._singletons:
+        if name not in self._providers:
             raise ValueError(f"No provider registered for {name}")
         
         provider, singleton = self._providers[name]
@@ -303,122 +352,27 @@ class Container: # Register all the different classes/components in this contain
         
         return instance
 
-session = requests.Session()
-
-# Try to fool Finn, not sure it is working
-session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0 Safari/537.36"
-    ),
-    "Accept-Language": "nb-NO,nb;q=0.9,en-US;q=0.8,en;q=0.7",
-})
-
-
-query = "gitar"
-page = 1
-items_raw = []
-scraped_at = datetime.today().date().isoformat()
-
-while True:
-    res = session.get(
-        "https://www.finn.no/recommerce/forsale/search",
-        params={"q": "gitar", "page": page},
-        timeout=15,
-    )
-    try:
-        res.raise_for_status()
-        
-    except: # TODO: Currently stops at page 50. My browser also stops at 50 and tells me to narrow down my search
-        print('Got bad response: Saving results an exiting')
-
-        with open("data/finn_items.jsonl", "a", encoding="utf-8") as f: # Storing only price, title and link
-            for el in items_raw:
-                item = el['item']
-                item = {
-                    "title": item["name"],
-                    "price": int(item["offers"]["price"]),
-                    "link": item["url"],
-                }
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
-                
-                
-        with open("data/finn_items_raw.jsonl", "a", encoding="utf-8") as f: # Storing the raw items
-            for el in items_raw:
-                el['_meta'] = {  # Add metadata to the item
-                    "query": query,
-                    "page": page,
-                    "scraped_at": scraped_at,
-                    "source": "finn.no",
-                }
-                f.write(json.dumps(el, ensure_ascii=False) + "\n")
-                
-        print('Results saved -- Done')
-
-        
-        
-    soup = BeautifulSoup(res.text, "html.parser")
-
-    script = soup.select_one('script#seoStructuredData')
-    if not script:
-        break
-
-    data = json.loads(script.string)
-    items_json = data["mainEntity"].get("itemListElement", [])
-
-    if not items_json:
-        print("Final page reached.")
-        break
-
-    items = [el for el in items_json]
-    
-
-    print(f"Found {len(items)} listings on page {page}")
-    items_raw.extend(items)
-    page += 1
-    
-    time.sleep(1.5)
-    
-    if page == 49:
-        time.sleep(20)
-    
-
-
-
-print('Searching done. Writing results')
-
-with open("data/finn_items.jsonl", "a", encoding="utf-8") as f: # Storing only price, title and link
-    for el in items_raw:
-        item = el['item']
-        item = {
-            "title": item["name"],
-            "price": int(item["offers"]["price"]),
-            "link": item["url"],
-        }
-        f.write(json.dumps(item, ensure_ascii=False) + "\n")
-        
-        
-with open("data/finn_items_raw.jsonl", "a", encoding="utf-8") as f: # Storing the raw items
-    for el in items_raw:
-        el['_meta'] = {  # Add metadata to the item
-            "query": query,
-            "page": page,
-            "scraped_at": scraped_at,
-            "source": "finn.no",
-        }
-        f.write(json.dumps(el, ensure_ascii=False) + "\n")
-        
-print('Results saved -- Done')
 
 
 # TODO: Implement main function and how to run it
 
-def main() -> None:
+def main(search_word: str) -> None:
     container = Container()
     
     # TODO: Register all relevant classes
+    output_filename = 'data/finn_listings_items.json'
+    container.register("scraper", lambda: FinnTorgetScraper(), singleton=True)
+    container.register("exporter", lambda: JSONExporter(output_filename))
     
-    container.register("extractor", FinnScraper(), singleton=True)
-    container.register("exporter", lambda: JSONExporter('finn_listings_items.json'))
+    container.register("pipeline", lambda: DataPipeline(
+        scraper=container.resolve('scraper'),
+        exporter=container.resolve("exporter"),
+    ))
     
+    pipeline: DataPipeline = container.resolve("pipeline")
+    pipeline.run_scrape_listings(search_word=search_word)
+    print(f"Pipeline finished. Output written to {output_filename}")
+    
+    
+if __name__ == __name__:
+    main(search_word = "gitar")
