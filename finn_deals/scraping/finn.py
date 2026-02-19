@@ -270,7 +270,7 @@ class FinnAPI:
 
     def _extract_dehydrated_payload(self, html: str) -> Dict[str, Any]:
         for encoded in self._iter_base64_blobs(html):
-            decoded_bytes = self._safe_b64decode(encoded)
+            decoded_bytes = self.©(encoded)
             if decoded_bytes is None:
                 continue
             try:
