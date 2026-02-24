@@ -1,3 +1,4 @@
+from typing import Iterable, List
 import numpy as np
 
 class WordPieceTokenizer:

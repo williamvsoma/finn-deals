@@ -12,6 +12,8 @@ class SentimentModelConfig:
     positional_encoding_type: Literal["sinusoidal", "learned", "none"] = "sinusoidal"
     embedding_dim: int = 32
     padding_idx: int = 0
+    num_time_features: int = 2
+    num_features: int
     mlp_hidden_layers: List[int] = field(default_factory=lambda: [64])  
 
     def to_dict(self) -> Dict[str, Any]:
@@ -86,6 +88,56 @@ class MLP(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x)
+    
+class TimeEncoder(nn.Module):
+    """
+    Time2Vec (Kazemi et al., 2019).
+
+    Maps scalar time features to a learned vector with one linear component
+    and ``output_dim - 1`` periodic (sinusoidal) components:
+
+        t2v(τ)[0]   = ω₀·τ + φ₀           (linear / trend)
+        t2v(τ)[1:]  = sin(ω·τ + φ)         (periodic / seasonality)
+
+    Args:
+        input_dim:  Number of raw time features (e.g. 1 for a single timestamp).
+        output_dim: Total dimensionality of the output representation.
+    """
+
+    def __init__(self, input_dim: int = 1, output_dim: int = 16):
+        super().__init__()
+        self.output_dim = output_dim
+
+        # Linear (trend) component  →  (input_dim, 1)
+        self.linear_weight = nn.Parameter(torch.randn(input_dim, 1) * 0.02)
+        self.linear_bias = nn.Parameter(torch.zeros(1))
+
+        # Periodic (seasonal) components  →  (input_dim, output_dim - 1)
+        n_periodic = output_dim - 1
+        if n_periodic > 0:
+            self.periodic_weight = nn.Parameter(
+                torch.randn(input_dim, n_periodic) * 0.02
+            )
+            self.periodic_bias = nn.Parameter(torch.zeros(n_periodic))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: ``(*, input_dim)`` raw time features.
+
+        Returns:
+            ``(*, output_dim)`` Time2Vec representation.
+        """
+        # Linear trend term  →  (*, 1)
+        linear = x @ self.linear_weight + self.linear_bias
+
+        if self.output_dim == 1:
+            return linear
+
+        # Periodic terms  →  (*, output_dim - 1)
+        periodic = torch.sin(x @ self.periodic_weight + self.periodic_bias)
+
+        return torch.cat([linear, periodic], dim=-1)
 
 class PositionalEncoder(nn.Module):
     
@@ -195,6 +247,12 @@ class SentimentModel(nn.Module):
         self.attention_pool = AttentionPooling(
             embedding_dim=config.embedding_dim,
         )
+
+        self.time_encoder = TimeEncoder(
+            input_dim=config.num_time_features,
+            output_dim=config.embedding_dim,
+        )
+    
         
         self.mlp = MLP(
             input_dim=config.embedding_dim,
@@ -202,7 +260,7 @@ class SentimentModel(nn.Module):
             output_dim=1,
         )
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: (B, S)
@@ -224,6 +282,7 @@ class SentimentModel(nn.Module):
 
         # Attetion pooling
         pooled = self.attention_pool(emb, mask) # (B, D)
+        time_emb = self.time_encoder(x2) # (B, D)
 
-        prediction = self.mlp(pooled).squeeze(-1) # (B,)
+        prediction = self.mlp(pooled + time_emb).squeeze(-1) # (B,)
         return prediction
