@@ -21,3 +21,4 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     clean["timestamp_val"] = ts_seconds.fillna(median_ts)
 
     return clean
+
