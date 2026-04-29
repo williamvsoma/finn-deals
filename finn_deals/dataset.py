@@ -1,6 +1,5 @@
 import argparse
 from pathlib import Path
-import pandas as pd
 
 from finn_deals.features import prepare_dataframe
 from finn_deals.scraping.finn import FinnAPI
@@ -8,7 +7,7 @@ from finn_deals.scraping.finn import FinnAPI
 
 def collect_data(query: str, pages: int, output: str, prepared_output: str | None):
     api = FinnAPI()
-    df = api.search_dataframe(query, max_pages=pages, include_raw=False)
+    df = api.search(query)
     if df.empty:
         raise SystemExit("No data fetched; adjust query or page count.")
 
