@@ -73,6 +73,49 @@ class FinnAPI:
                 logger.warning("Failed to fetch item %s: %s", ad_id, exc)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    def get_descriptions(self, ad_ids: Iterable[str]) -> dict[str, str]:
+        """
+        Fetch the listing body/description text for multiple ad IDs.
+
+        Returns a dict mapping ad_id → description string.
+        Skips items that fail to fetch or have no description.
+        """
+        descriptions: dict[str, str] = {}
+        for ad_id in ad_ids:
+            ad_id = str(ad_id)
+            try:
+                raw = self._item_page(ad_id)
+                desc = (raw.get("itemData") or {}).get("description", "")
+                if desc:
+                    descriptions[ad_id] = desc
+            except Exception as exc:
+                logger.warning("Failed to fetch description for %s: %s", ad_id, exc)
+        return descriptions
+
+    def enrich_with_descriptions(self, df: pd.DataFrame, ad_id_col: str = "ad_id") -> pd.DataFrame:
+        """
+        Enrich a search-results DataFrame with a ``description`` column
+        by fetching individual item pages.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Search results (as returned by ``search()``).
+        ad_id_col : str
+            Column name containing the FINN ad IDs.
+
+        Returns
+        -------
+        pd.DataFrame
+            Copy of *df* with an added ``description`` column.
+        """
+        ad_ids = df[ad_id_col].dropna().unique().astype(str).tolist()
+        logger.info("Fetching descriptions for %d listings...", len(ad_ids))
+        descriptions = self.get_descriptions(ad_ids)
+        result = df.copy()
+        result["description"] = result[ad_id_col].astype(str).map(descriptions).fillna("")
+        return result
+
     # ------------------------------------------------------------------
     # Item-page parsing helpers
     # ------------------------------------------------------------------
