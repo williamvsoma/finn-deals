@@ -137,15 +137,24 @@ class DataPipeline:
             scaled[nan_mask] = 0.0
             transformed[col] = scaled
 
+    def _build_text_series(self, data: pd.DataFrame, col: str) -> pd.Series:
+        """Concatenate the primary text column with any text_concat columns."""
+        concat_cols = self.encoding_plan.get("text_concat", [])
+        combined = data[col].fillna("")
+        for extra_col in concat_cols:
+            if extra_col in data.columns:
+                combined = combined + " " + data[extra_col].fillna("")
+        return combined.str.strip()
+
     def _fit_text(self, data: pd.DataFrame) -> None:
         for col in self.encoding_plan["text"]:
             self.tokenizers[col] = WordPieceTokenizer()
-            self.tokenizers[col].fit(data[col].fillna(""))
+            self.tokenizers[col].fit(self._build_text_series(data, col))
         self.feature_cols["text"] = self.encoding_plan["text"]
 
     def _transform_text(self, data: pd.DataFrame, transformed: pd.DataFrame) -> None:
         for col in self.feature_cols.get("text", []):
-            transformed[col] = self.tokenizers[col](data[col].fillna(""))
+            transformed[col] = self.tokenizers[col](self._build_text_series(data, col))
 
     def _fit_numeric(self, data: pd.DataFrame) -> None:
         cols = self.encoding_plan["numeric"]

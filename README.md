@@ -28,10 +28,9 @@ pip install -e ".[dev]"   # dev installs add pytest, ruff, black, mypy, jupyter
 1) **Scrape data to CSV** (raw and prepared; defaults write to `data/raw/listings_raw.csv` and `data/processed/listings_prepared.csv`):
 ```bash
 python -m finn_deals.dataset \
-  --query "gitar" \
-  --pages 5 \
-  --output data/raw/listings_raw.csv \
-  --prepared-output data/processed/listings_prepared.csv
+  --query "iphone" \
+  --output data/raw/iphone_raw.csv
+
 ```
 
 2) **Train a model** (uses scraped or provided CSV):
