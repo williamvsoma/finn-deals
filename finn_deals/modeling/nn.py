@@ -297,6 +297,8 @@ class DealPricingModelConfig:
     seq_max_len: int = 64
     positional_encoding_type: Literal["sinusoidal", "learned", "none"] = "sinusoidal"
     text_embedding_dim: int = 32
+    num_text_heads: int = 2
+    num_text_layers: int = 1
     padding_idx: int = 0
 
     # Tabular branch (numeric + numeric_log + temporal + binary + categorical_low)
@@ -350,6 +352,17 @@ class DealPricingModel(nn.Module):
             max_len=config.seq_max_len,
             encoding_type=config.positional_encoding_type,
         )
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.text_embedding_dim,
+            nhead=config.num_text_heads,
+            dim_feedforward=config.text_embedding_dim * 4,
+            dropout=config.dropout,
+            batch_first=True,
+        )
+        self.text_transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=config.num_text_layers,
+            enable_nested_tensor=False,
+        )
         self.attention_pool = AttentionPooling(config.text_embedding_dim)
         self.text_proj = nn.Linear(config.text_embedding_dim, config.fusion_dim)
 
@@ -399,7 +412,9 @@ class DealPricingModel(nn.Module):
         emb = self.text_embedding(text_ids)  # (B, S, D)
         pe = self.positional_encoding(S)     # (S, D)
         emb = emb + pe.unsqueeze(0)
-        mask = (text_ids != self.config.padding_idx)
+        mask = (text_ids != self.config.padding_idx)  # (B, S)
+        src_key_padding_mask = ~mask                  # True = ignore
+        emb = self.text_transformer(emb, src_key_padding_mask=src_key_padding_mask)  # (B, S, D)
         text_vec = self.attention_pool(emb, mask)  # (B, D)
         text_vec = self.text_proj(text_vec)        # (B, fusion_dim)
 

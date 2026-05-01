@@ -1,5 +1,6 @@
-from typing import Optional, Any, Iterable, Generator
+from typing import Any, Generator, Iterable
 from tenacity import retry, stop_after_attempt, wait_fixed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import re
 import json
@@ -21,23 +22,24 @@ class FinnAPI:
     base_url = "https://www.finn.no"
     search_path = "/recommerce/forsale/search"
     item_path = "/recommerce/forsale/item"
-    max_public_results = None  # TODO: Determine if there is a max number of results that can be accessed via pagination
     max_pages = 50
 
-    def __init__(self, session: Optional[requests.Session] = None):
+    def __init__(self, session: requests.Session | None = None):
         self.session = session or requests.Session()
         self.session.headers.setdefault("User-Agent", "finn-scraper/0.3")
 
-    def search(self, query: str) -> pd.DataFrame:
+    def search(self, query: str, max_workers: int = 4) -> pd.DataFrame:
         """
         Search FINN for the given query and return a DataFrame with one row per listing.
 
-        This method paginates through results by price ranges to ensure we can access all results without hitting duplicates or missing entries across page boundaries. It will continue paginating until it exhausts all price ranges or reaches the maximum number of public results (if any).
-
-        Note: The first page of results may contain a promoted/sponsored listing which is not included in the organic search results and may have a different price than the rest of the listings on that page. By paginating through price ranges, we ensure that we capture all listings including any promoted ones without missing or duplicating entries.
+        Concurrently fetches item-page details (description, all image URLs,
+        condition, location, seller info, etc.) for each listing.
         """
-        return self._iter_price_ranges(query)
-    
+        df = self._iter_price_ranges(query)
+        if not df.empty and "ad_id" in df.columns:
+            df = self._enrich_with_item_details(df, max_workers=max_workers)
+        return df
+
     def _item_page(self, ad_id: str) -> dict[str, Any]:
         """
         Fetch a single item page and return the structured item data
@@ -73,47 +75,108 @@ class FinnAPI:
                 logger.warning("Failed to fetch item %s: %s", ad_id, exc)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    def get_descriptions(self, ad_ids: Iterable[str]) -> dict[str, str]:
+    def _get_item_details(self, ad_ids: Iterable[str], max_workers: int = 8) -> dict[str, dict[str, Any]]:
         """
-        Fetch the listing body/description text for multiple ad IDs.
+        Fetch full item-page details for multiple ad IDs concurrently.
 
-        Returns a dict mapping ad_id → description string.
-        Skips items that fail to fetch or have no description.
+        Returns a mapping of ad_id → dict with keys useful for price
+        prediction: description, all image URLs, condition, location,
+        seller type, category details, etc.
         """
-        descriptions: dict[str, str] = {}
-        for ad_id in ad_ids:
-            ad_id = str(ad_id)
-            try:
-                raw = self._item_page(ad_id)
-                desc = (raw.get("itemData") or {}).get("description", "")
-                if desc:
-                    descriptions[ad_id] = desc
-            except Exception as exc:
-                logger.warning("Failed to fetch description for %s: %s", ad_id, exc)
-        return descriptions
+        ad_ids = [str(aid) for aid in ad_ids]
 
-    def enrich_with_descriptions(self, df: pd.DataFrame, ad_id_col: str = "ad_id") -> pd.DataFrame:
+        def _fetch_one(ad_id: str) -> tuple[str, dict[str, Any]]:
+            raw = self._item_page(ad_id)
+            item_data = raw.get("itemData") or {}
+            transactable = raw.get("transactableData") or {}
+
+            # All image URLs (full list from item page)
+            images = item_data.get("images") or []
+            all_image_urls = [img.get("uri") for img in images if img.get("uri")]
+
+            # Location details
+            location = item_data.get("location") or {}
+            position = location.get("position") or {}
+
+            # Extras (condition, brand, model, etc.)
+            extras = {}
+            for extra in item_data.get("extras") or []:
+                eid = extra.get("id", "")
+                if eid:
+                    extras[f"extra_{eid}"] = extra.get("value")
+
+            # Category hierarchy
+            cat = item_data.get("category") or {}
+            parent_cat = cat.get("parent") or {}
+            grandparent_cat = parent_cat.get("parent") or {}
+
+            detail: dict[str, Any] = {
+                "description": item_data.get("description", ""),
+                "all_image_urls": all_image_urls,
+                "num_images_detail": len(all_image_urls),
+                "postal_code": location.get("postalCode"),
+                "postal_name": location.get("postalName"),
+                "latitude": position.get("lat"),
+                "longitude": position.get("lng"),
+                "category": cat.get("value"),
+                "category_id": cat.get("id"),
+                "sub_category": parent_cat.get("value"),
+                "sub_category_id": parent_cat.get("id"),
+                "top_category": grandparent_cat.get("value"),
+                "top_category_id": grandparent_cat.get("id"),
+                "txn_buyNow": transactable.get("buyNow"),
+                "txn_shipping": transactable.get("eligibleForShipping"),
+                **extras,
+            }
+
+            # Seller / retailer info
+            if "follower_count" in raw:
+                detail["seller_follower_count"] = raw["follower_count"]
+            cp = raw.get("companyProfile")
+            if cp and isinstance(cp, dict):
+                detail["seller_org_name"] = cp.get("org_name")
+                detail["seller_org_id"] = cp.get("org_id")
+
+            return ad_id, detail
+
+        details: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_fetch_one, aid): aid for aid in ad_ids}
+            for future in as_completed(futures):
+                ad_id = futures[future]
+                try:
+                    _, detail = future.result()
+                    details[ad_id] = detail
+                except Exception as exc:
+                    logger.warning("Failed to fetch details for %s: %s", ad_id, exc)
+        return details
+
+    def _enrich_with_item_details(self, df: pd.DataFrame, max_workers: int = 8, ad_id_col: str = "ad_id") -> pd.DataFrame:
         """
-        Enrich a search-results DataFrame with a ``description`` column
-        by fetching individual item pages.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Search results (as returned by ``search()``).
-        ad_id_col : str
-            Column name containing the FINN ad IDs.
-
-        Returns
-        -------
-        pd.DataFrame
-            Copy of *df* with an added ``description`` column.
+        Enrich a search-results DataFrame with full item-page details:
+        description, all image URLs, condition, location, seller info, etc.
         """
         ad_ids = df[ad_id_col].dropna().unique().astype(str).tolist()
-        logger.info("Fetching descriptions for %d listings...", len(ad_ids))
-        descriptions = self.get_descriptions(ad_ids)
+        logger.info("Fetching item details for %d listings...", len(ad_ids))
+        details = self._get_item_details(ad_ids, max_workers=max_workers)
+
+        # Build a DataFrame from the details dict and merge on ad_id
+        if not details:
+            return df
+
+        details_df = pd.DataFrame.from_dict(details, orient="index")
+        details_df.index.name = ad_id_col
+        details_df = details_df.reset_index()
+        details_df[ad_id_col] = details_df[ad_id_col].astype(str)
+
         result = df.copy()
-        result["description"] = result[ad_id_col].astype(str).map(descriptions).fillna("")
+        result[ad_id_col] = result[ad_id_col].astype(str)
+
+        # Only merge columns that don't already exist (avoid clobbering search data)
+        existing_cols = set(result.columns)
+        new_cols = [c for c in details_df.columns if c not in existing_cols or c == ad_id_col]
+        result = result.merge(details_df[new_cols], on=ad_id_col, how="left")
+
         return result
 
     # ------------------------------------------------------------------
@@ -147,15 +210,16 @@ class FinnAPI:
                 continue
 
             # The JSON is double-escaped inside a JS string literal.
-            # decode("unicode_escape") treats the byte-stream as latin-1,
-            # so we must re-encode as latin-1 then decode as utf-8 to
-            # recover multi-byte characters (æøå, emojis, etc.).
-            unescaped = (
-                m.group(1)
-                .encode("utf-8")
-                .decode("unicode_escape")
-                .encode("latin-1")
-                .decode("utf-8")
+            # decode("unicode_escape") treats each byte as latin-1, so
+            # raw UTF-8 sequences (æøå) end up as individual latin-1
+            # chars that need a round-trip to recover. However, \uXXXX
+            # escapes for chars > 0xFF (e.g. U+2028) are decoded directly
+            # and must be kept as-is (they can't survive latin-1 encoding).
+            decoded = m.group(1).encode("utf-8").decode("unicode_escape")
+            parts = re.split(r"([^\x00-\xff]+)", decoded)
+            unescaped = "".join(
+                part.encode("latin-1").decode("utf-8") if i % 2 == 0 else part
+                for i, part in enumerate(parts)
             )
             data = json.loads(unescaped)
 
@@ -182,7 +246,7 @@ class FinnAPI:
 
                     return result
 
-        raise ValueError(f"Unable to locate item hydration data in page")
+        raise ValueError("Unable to locate item hydration data in page")
 
     def _extract_company_profile(self, html: str) -> dict[str, Any] | None:
         """
@@ -303,7 +367,7 @@ class FinnAPI:
         df = pd.json_normalize([item], sep="_")
 
         return df
-    
+
     def _iter_price_ranges(self, query: str) -> pd.DataFrame:
         max_price = 0
         results: list[pd.DataFrame] = []
@@ -315,23 +379,18 @@ class FinnAPI:
             results.extend(price_range_result)
 
             df = price_range_result[-1]
-            max_price = df.loc[df["is_promoted"] == False, "price_amount"].max()
+            max_price = df.loc[~df["is_promoted"], "price_amount"].max()
 
             if np.isnan(max_price):
                 break
             max_price = int(max_price)
 
-            
-        
         df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
         if not df.empty and "ad_id" in df.columns:
             df = df.drop_duplicates(subset="ad_id", keep="first").reset_index(drop=True)
-
         return df
 
-    
-    def _iter_pages(self, query: str, price_from: int) -> Generator[pd.DataFrame]:
-
+    def _iter_pages(self, query: str, price_from: int) -> Generator[pd.DataFrame, None, None]:
         for page in range(1, self.max_pages + 1):
             df = self._query(query, page, price_from)
             if df.empty:
@@ -346,21 +405,16 @@ class FinnAPI:
         return resp
 
     def _query(self, query: str, page: int, price_from: int) -> pd.DataFrame:
-
         params: dict[str, str] = {
-            "q": query, 
-            "page": str(page), 
-            "price_from": str(price_from), 
-            "sort": "PRICE_ASC", # sort by ascending price to ensure we can paginate through price ranges without missing results or hitting duplicates across pages
+            "q": query,
+            "page": str(page),
+            "price_from": str(price_from),
+            "sort": "PRICE_ASC",
         }
-
-        logger.debug("Searching FINN with params: %s", params)
-
         response = self._request_with_retries(
             f"{self.base_url}{self.search_path}",
             params=params,
         )
-        response.raise_for_status()
         return self._parse_query_response(response.text)
 
     def _parse_query_response(self, html: str) -> pd.DataFrame:
@@ -390,7 +444,7 @@ class FinnAPI:
         for match in pattern.finditer(html):
             yield match.group(1).strip()
 
-    def _safe_b64decode(self, encoded: str) -> Optional[bytes]:
+    def _safe_b64decode(self, encoded: str) -> bytes | None:
         cleaned = encoded.replace("\n", "").replace("\r", "").strip()
         padding = len(cleaned) % 4
         if padding:
@@ -413,7 +467,7 @@ class FinnAPI:
                 return data
         raise ValueError("Unable to locate search results (docs) in payload")
 
-    def _extract_promoted_entry(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    def _extract_promoted_entry(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Return the promoted / sponsored listing (``searchEntry``), if any."""
         for query in payload.get("queries", []):
             state = query.get("state") or {}
