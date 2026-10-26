@@ -9,6 +9,7 @@ Pipeline for scraping Finn.no listings, engineering features, and training price
 ## Project layout
 - `finn_deals/` — package code
   - `scraping/` — Finn API wrapper and HTML parsing
+  - `mcp/` — Finn.no MCP server for agents
   - `features.py` — feature engineering helpers
   - `dataset.py` — CLI for scraping to CSV
   - `modeling/` — training/eval/inference utilities
@@ -56,6 +57,42 @@ python -m finn_deals.modeling.eval \
 ```
 
 > Note: Scraping respects Finn.no’s public interface; avoid excessive paging and consider adding delays if you scale up.
+
+## MCP server (agent-facing Finn.no search)
+
+The package ships an MCP server (`finn_deals.mcp`) that lets coding agents search
+[Finn.no](https://www.finn.no) listings on the user's behalf and inspect the results.
+
+### Tools
+
+- `finn_search` — run a Finn.no search and filter listings by price range and location.
+  Returns a JSON list of matching listings (`ad_id`, `title`, `url`, `location`, `price_*`,
+  `image_url`, `timestamp`, `promoted`). Price-range sharding is handled internally when the
+  result set is large.
+- `finn_get_listing` — fetch full details for a single listing by ad id: description, all
+  image urls, price, location (postal code + coordinates), condition/extras, category
+  hierarchy, transaction flags and seller info.
+- `finn_get_image` — fetch a listing image and return it as image content the model can view.
+
+### Run the server
+```bash
+python -m finn_deals.mcp              # stdio (default, for Claude Desktop / MCP clients)
+python -m finn_deals.mcp --transport streamable-http   # streamable http
+```
+
+### Wire it into an MCP client
+
+```json
+{
+  "mcpServers": {
+    "finn-deals": {
+      "command": "python",
+      "args": ["-m", "finn_deals.mcp"],
+      "env": {}
+    }
+  }
+}
+```
 
 ## Development
 - Run tests: `pytest`

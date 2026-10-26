@@ -11,3 +11,4 @@ plotly
 numpy
 pandas
 torch
+mcp>=1.30,<2

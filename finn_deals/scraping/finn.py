@@ -24,6 +24,7 @@ class Listing:
     image_url: Optional[str]
     timestamp: Optional[datetime]
     raw: Dict[str, Any]
+    promoted: bool = False
 
     @property
     def price_display(self) -> str:
@@ -68,6 +69,7 @@ class SearchResult:
                 "price_display": listing.price_display,
                 "image_url": listing.image_url,
                 "timestamp": listing.timestamp.isoformat() if listing.timestamp else None,
+                "promoted": listing.promoted,
             }
             if include_raw:
                 row["raw"] = listing.raw
@@ -317,6 +319,7 @@ class FinnAPI:
             image_url=self._extract_image_url(doc),
             timestamp=self._parse_timestamp(doc.get("timestamp")),
             raw=doc,
+            promoted=bool(doc.get("_promoted", False)),
         )
 
     def _extract_image_url(self, doc: Dict[str, Any]) -> Optional[str]:
