@@ -1,15 +1,18 @@
 import base64
 import json
+import logging
+import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import pandas as pd
 import requests
-import time
-import logging
-import math
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 logger = logging.getLogger('search.client')
 
 @dataclass
@@ -88,7 +91,19 @@ class FinnAPI:
 
     def __init__(self, session: Optional[requests.Session] = None):
         self.session = session or requests.Session()
-        self.session.headers.setdefault("User-Agent", "finn-scraper/0.1")
+        if session is None:
+            self.session.headers["User-Agent"] = "finn-deals/0.1"
+            self.session.mount(
+                "https://",
+                HTTPAdapter(max_retries=Retry(
+                    total=2,
+                    backoff_factor=0.5,
+                    status_forcelist=[500, 502, 503, 504],
+                    allowed_methods=["GET"],
+                    backoff_max=5,
+                    respect_retry_after_header=False,
+                )),
+            )
         self.MAX_PUBLIC_RESULTS = 2000 # approximate cap for FINN search results
 
     def search(self, query: str, page: int = 1, price_from: Optional[int] = None, price_to: Optional[int] = None, **params: Any) -> SearchResult:
@@ -125,6 +140,8 @@ class FinnAPI:
         Generator that walks through result pages until FINN reports the end
         or max_pages is reached.
         """
+        if max_pages is not None and max_pages < 1:
+            raise ValueError("max_pages must be at least 1")
         page = 1
         while True:
             
@@ -149,7 +166,7 @@ class FinnAPI:
             # Chat gpt stuff. Dont really understand it yet
             first = self.search(query=query, page=1, price_from=price_min, price_to=price_max, **params)
             total = first.total_matches
-            if total <= self.MAX_PUBLIC_RESULTS:
+            if total <= self.MAX_PUBLIC_RESULTS or price_min >= price_max:
                 return [(price_min, price_max)]
                 
             num_shards = max(2, math.ceil(total / self.MAX_PUBLIC_RESULTS)) # This will never be above 2...

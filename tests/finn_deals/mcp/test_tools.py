@@ -8,10 +8,11 @@ from mcp.server.fastmcp.utilities.types import Image
 
 from finn_deals.mcp import tools
 from finn_deals.mcp.tools import finn_get_image, finn_get_listing, finn_search
+from finn_deals.scraping.finn import FinnAPI, SearchResult
 
 
 class FakeResponse:
-    def __init__(self, content: bytes = b"fakejpegdata") -> None:
+    def __init__(self, content: bytes = b"\xff\xd8\xffjpegdata") -> None:
         self.content = content
         self.status_code = 200
 
@@ -27,7 +28,7 @@ class FakeSession:
         self, url: str, params: Any = None, timeout: float | None = None
     ) -> FakeResponse:
         self.calls.append((url, params, timeout))
-        return FakeResponse(b"fakejpegdata")
+        return FakeResponse()
 
 
 class FakeClient:
@@ -42,15 +43,27 @@ class FakeClient:
         self.detail = detail if detail is not None else {}
         self.session = FakeSession()
 
-    def search_dataframe_sharded(
+    def iter_search(
         self,
         query: str,
-        price_min: float,
-        price_max: float,
         max_pages: int = 2,
         **kwargs: Any,
-    ) -> pd.DataFrame:
-        return self.df
+    ):
+        api = FinnAPI()
+        listings = [
+            api._build_listing(
+                {
+                    "id": row["id"],
+                    "heading": row["title"],
+                    "canonical_url": row["url"],
+                    "location": row["location"],
+                    "price": {"amount": row["price_amount"], "currency_code": "NOK"},
+                    "image_urls": [row["image_url"]],
+                }
+            )
+            for row in self.df.to_dict("records")
+        ]
+        yield SearchResult(listings, len(listings), 1, 1, True, {}, {})
 
     def get_item(self, ad_id: str) -> dict[str, Any]:
         return self.detail
@@ -187,10 +200,12 @@ def test_finn_get_image_returns_image_content(monkeypatch: pytest.MonkeyPatch) -
     image = asyncio.run(finn_get_image(ad_id="451778168"))
 
     assert isinstance(image, Image)
-    assert image.data == b"fakejpegdata"
+    assert image.data == b"\xff\xd8\xffjpegdata"
     image_content = image.to_image_content()
     assert image_content.mimeType == "image/jpeg"
-    assert image_content.data == "ZmFrZWpwZWdkYXRh"
+    import base64
+
+    assert image_content.data == base64.b64encode(image.data).decode()
 
 
 def test_get_finn_client_returns_shared_client_instance() -> None:

@@ -9,7 +9,6 @@ category hierarchy and seller information.
 import json
 import logging
 import re
-import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -81,6 +80,8 @@ class ListingDetails:
     transactable: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
     follower_count: int | None = None
+    availability: str = "unknown"
+    shipping_payment_info: str | None = None
     seller: SellerProfile | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -93,7 +94,9 @@ class ListingDetails:
         transactable = dict(raw.get("transactableData") or {})
         meta_page = dict(raw.get("meta") or {})
 
-        price = dict(item.get("price") or {})
+        raw_price = item.get("price")
+        price = raw_price if isinstance(raw_price, dict) else {"amount": raw_price}
+        offers = (raw.get("jsonLd") or {}).get("offers") or {}
         price_amount = price.get("amount")
         price_unit = price.get("price_unit") or price.get("currency_code")
 
@@ -107,7 +110,7 @@ class ListingDetails:
                 if extra.get("valueId") is not None:
                     extras[f"{extra_id}_id"] = extra.get("valueId")
 
-        category = dict(item.pop("category") or {})
+        category = dict(item.pop("category", None) or {})
         parent = dict(category.get("parent") or {})
         grandparent = dict(parent.get("parent") or {})
 
@@ -116,12 +119,18 @@ class ListingDetails:
             if isinstance(image, dict) and image.get("uri"):
                 image_urls.append(image["uri"])
 
-        location = dict(item.pop("location") or {})
+        location = dict(item.pop("location", None) or {})
         position = dict(location.get("position") or {})
 
-        meta: dict[str, Any] = dict(item.pop("meta") or {})
+        meta: dict[str, Any] = dict(item.pop("meta", None) or {})
 
         txn = dict(transactable)
+        sidebar = ((raw.get("transactableUiData") or {}).get("sections") or {}).get(
+            "sidebar"
+        ) or {}
+        shipping = ((sidebar.get("optedIn") or {}).get("shippingPrice") or {}).get(
+            "text"
+        )
 
         follower_count = raw.get("follower_count")
         if not isinstance(follower_count, int):
@@ -152,13 +161,13 @@ class ListingDetails:
 
         return cls(
             ad_id=str(ad_id),
-            title=item.get("heading"),
+            title=item.get("title") or item.get("heading"),
             url=url_str,
             price_amount=price_amount,
-            price_currency=price.get("currency_code"),
+            price_currency=price.get("currency_code") or offers.get("priceCurrency"),
             price_unit=price_unit,
             price_display=(
-                f"{price_amount} {price_unit}".strip()
+                f"{price_amount} {price_unit or offers.get('priceCurrency') or 'NOK'}".strip()
                 if price_amount is not None
                 else None
             ),
@@ -166,14 +175,14 @@ class ListingDetails:
             image_url=image_urls[0] if image_urls else None,
             image_urls=image_urls,
             num_images=len(image_urls),
-            location=location.get("location"),
+            location=location.get("location") or location.get("postalName"),
             postal_code=location.get("postalCode"),
             postal_name=location.get("postalName"),
             country_code=location.get("countryCode"),
             latitude=position.get("lat"),
             longitude=position.get("lng"),
             coord_accuracy=position.get("accuracy"),
-            timestamp=cls._parse_timestamp(item.get("timestamp")),
+            timestamp=cls._parse_timestamp(item.get("timestamp") or meta.get("edited")),
             category=category.get("value"),
             category_id=category.get("id"),
             sub_category=parent.get("value"),
@@ -184,7 +193,17 @@ class ListingDetails:
             transactable=txn,
             meta=meta,
             follower_count=follower_count,
-            seller=seller,
+            availability=(
+                "disposed"
+                if item.get("disposed")
+                else (
+                    "inactive"
+                    if meta.get("isInactive")
+                    else "active" if meta.get("isInactive") is False else "unknown"
+                )
+            ),
+            shipping_payment_info=shipping,
+            seller=seller if company else None,
             raw=raw,
         )
 
@@ -220,6 +239,8 @@ class ListingDetails:
             "transactable": self.transactable,
             "meta": self.meta,
             "follower_count": self.follower_count,
+            "availability": self.availability,
+            "shipping_payment_info": self.shipping_payment_info,
             "seller": self.seller.to_dict() if self.seller is not None else None,
         }
 
@@ -228,6 +249,8 @@ class ListingDetails:
         if not value:
             return None
         try:
+            if isinstance(value, str) and "T" in value:
+                return datetime.fromisoformat(value)
             return datetime.fromtimestamp(float(value) / 1000, tz=UTC)
         except (TypeError, ValueError, OSError):
             return None
@@ -239,8 +262,7 @@ class FinnListingClient(FinnAPI):
     item_path = "/recommerce/forsale/item"
 
     _HYDRATION_RE = re.compile(
-        r'window\.__staticRouterHydrationData\s*=\s*JSON\.parse\("(.*)"\)',
-        re.DOTALL,
+        r'window\.__staticRouterHydrationData\s*=\s*JSON\.parse\(("(?:\\.|[^"\\])*")\)',
     )
 
     _FOLLOWER_RE = re.compile(r"(\d+)\s+følger")
@@ -258,22 +280,11 @@ class FinnListingClient(FinnAPI):
     # Item-page fetching
     # ------------------------------------------------------------------
 
-    def _get_with_retries(
-        self, url: str, params: dict[str, Any], attempts: int = 3
-    ) -> requests.Response:
-        last_exc: Exception | None = None
-        for attempt in range(attempts):
-            try:
-                resp = self.session.get(url, params=params, timeout=15)
-                resp.raise_for_status()
-                return resp
-            except Exception as exc:  # noqa: BLE001 - transport errors are retried
-                last_exc = exc
-                if attempt + 1 < attempts:
-                    time.sleep(2**attempt)
-        raise RuntimeError(
-            f"Failed to fetch {url} after {attempts} attempts"
-        ) from last_exc
+    def _get_with_retries(self, url: str, params: dict[str, Any]) -> requests.Response:
+        # The shared HTTP adapter retries transient errors, but never missing ads.
+        resp = self.session.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        return resp
 
     def _item_page(self, ad_id: str) -> dict[str, Any]:
         response = self._get_with_retries(
@@ -284,6 +295,8 @@ class FinnListingClient(FinnAPI):
 
     def get_item(self, ad_id: str) -> dict[str, Any]:
         """Fetch a single listing by ad-id and return a full detail dict."""
+        if not re.fullmatch(r"[0-9]{1,12}", str(ad_id)):
+            raise ValueError("ad_id must be a numeric FINN ad id")
         raw = self._item_page(str(ad_id))
         details = ListingDetails.from_raw(str(ad_id), raw, base_url=self.base_url)
         return details.to_dict()
@@ -320,13 +333,26 @@ class FinnListingClient(FinnAPI):
     # ------------------------------------------------------------------
 
     def _parse_item_page(self, html: str) -> dict[str, Any]:
-        payload = self._extract_dehydrated_payload(html)
+        match = self._HYDRATION_RE.search(html)
+        if match:
+            try:
+                payload = json.loads(json.loads(match.group(1)))
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError("Invalid FINN listing hydration payload") from exc
+        else:
+            payload = self._extract_dehydrated_payload(html)
         section = self._find_item_section(payload)
+        if not section or not section.get("itemData"):
+            raise ValueError(
+                "Unable to locate FINN listing data; page format may have changed"
+            )
         result: dict[str, Any] = {
             "itemData": section.get("itemData") or {},
             "transactableData": section.get("transactableData") or {},
             "profileData": section.get("profileData") or {},
             "meta": section.get("meta") or {},
+            "jsonLd": section.get("jsonLd") or {},
+            "transactableUiData": section.get("transactableUiData") or {},
         }
         fm = self._FOLLOWER_RE.search(html)
         if fm:
@@ -341,12 +367,12 @@ class FinnListingClient(FinnAPI):
                 return node
             for value in node.values():
                 found = self._find_item_section(value)
-                if found is not None:
+                if found:
                     return found
         elif isinstance(node, list):
             for value in node:
                 found = self._find_item_section(value)
-                if found is not None:
+                if found:
                     return found
         return {}
 
