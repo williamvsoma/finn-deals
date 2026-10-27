@@ -1,0 +1,8 @@
+# Project-local MCP connection for this checkout (trusted projects only).
+[mcp_servers.finn-deals]
+command = "/Users/soma/finn-deals/.venv/bin/python"
+args = ["-m", "finn_deals.mcp"]
+cwd = "/Users/soma/finn-deals"
+enabled = true
+startup_timeout_sec = 20
+tool_timeout_sec = 180
