@@ -22,7 +22,9 @@ Pipeline for scraping Finn.no listings, engineering features, and training price
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"   # dev installs add pytest, ruff, black, mypy, jupyter
+pip install -e .
+# Or use uv to install the project and development dependencies:
+uv sync --group dev
 ```
 
 ## Quickstart workflow

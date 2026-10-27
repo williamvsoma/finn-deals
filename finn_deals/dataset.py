@@ -1,6 +1,5 @@
 import argparse
 from pathlib import Path
-import pandas as pd
 
 from finn_deals.features import prepare_dataframe
 from finn_deals.scraping.finn import FinnAPI
