@@ -108,3 +108,18 @@ def test_absolute_url_handles_relative_and_full():
     assert api._absolute_url("/path/to/item") == "https://www.finn.no/path/to/item"
     full = "https://cdn.finn.no/img.jpg"
     assert api._absolute_url(full) == full
+
+
+def test_sharded_dataframe_has_pandas_for_nonempty_and_empty(monkeypatch):
+    api = FinnAPI()
+    monkeypatch.setattr(api, "_auto_shard_price_ranges", lambda *a, **kw: [(0, 10), (11, 20)])
+    monkeypatch.setattr(api, "search_dataframe", lambda *a, **kw: pd.DataFrame({"id": ["1"]}))
+    assert list(api.search_dataframe_sharded("test")["id"]) == ["1"]
+    monkeypatch.setattr(api, "search_dataframe", lambda *a, **kw: pd.DataFrame())
+    assert api.search_dataframe_sharded("test").empty
+
+
+def test_sharding_stops_for_single_price_even_if_over_cap(monkeypatch):
+    api = FinnAPI()
+    monkeypatch.setattr(api, "search", lambda **kw: SearchResult([], 10000, 1, 50, False, {}, {}))
+    assert api._auto_shard_price_ranges("test", 100, 100) == [(100, 100)]

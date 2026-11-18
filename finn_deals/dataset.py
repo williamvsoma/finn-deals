@@ -7,7 +7,7 @@ from finn_deals.scraping.finn import FinnAPI
 
 def collect_data(query: str, pages: int, output: str, prepared_output: str | None):
     api = FinnAPI()
-    df = api.search(query)
+    df = api.search_dataframe(query, max_pages=pages, include_raw=False)
     if df.empty:
         raise SystemExit("No data fetched; adjust query or page count.")
 
