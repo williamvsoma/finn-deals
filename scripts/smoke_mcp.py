@@ -26,12 +26,13 @@ async def run(query: str) -> None:
         names = {tool.name for tool in (await session.list_tools()).tools}
         assert names == {
             "finn_search",
+            "finn_discover_filters",
             "finn_get_listing",
             "finn_get_image",
             "finn_find_deals",
             "finn_compare_listings",
         }, names
-        print("PASS: server startup and all five tool schemas", flush=True)
+        print("PASS: server startup and all six tool schemas", flush=True)
 
         async def call(name, arguments):
             result = await session.call_tool(name, arguments)
@@ -40,7 +41,32 @@ async def run(query: str) -> None:
             return result
 
         def payload(result):
-            return json.loads(next(c.text for c in result.content if c.type == "text"))
+            assert result.structuredContent is None and len(result.content) == 1
+            return json.loads(result.content[0].text)
+
+        areas = payload(
+            await call(
+                "finn_discover_filters",
+                {"group": "location", "query": query, "limit": 1},
+            )
+        )
+        assert areas["options"], "No populated FINN area for this query"
+        area = areas["options"][0]
+        assert area["hits"] > 0 and "location" in area["finn_filters"]
+        scoped = payload(
+            await call(
+                "finn_search",
+                {"query": query, "max_pages": 1, "finn_filters": area["finn_filters"]},
+            )
+        )
+        assert (
+            scoped["pages_fetched"] == 1
+            and scoped["filters"]["finn_filters"] == area["finn_filters"]
+        )
+        print(
+            f"PASS: native area search in {area['label']} ({scoped['total_matches']} matches)",
+            flush=True,
+        )
 
         search = payload(
             await call(
@@ -68,7 +94,7 @@ async def run(query: str) -> None:
             )
             if not result.isError:
                 candidate = payload(result)
-                if candidate.get("image_urls") and candidate.get("title"):
+                if candidate.get("num_images") and candidate.get("title"):
                     detail = candidate
                     break
         assert detail is not None, "No inspectable listing among first five results"

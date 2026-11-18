@@ -179,7 +179,7 @@ def test_finn_get_listing_returns_full_detail_json(
     }
     monkeypatch.setattr(tools, "_client", FakeClient(detail=detail))
 
-    result = asyncio.run(finn_get_listing(ad_id="451778168"))
+    result = asyncio.run(finn_get_listing(ad_id="451778168", view="full"))
 
     parsed = json.loads(result)
     assert parsed["ad_id"] == "451778168"
