@@ -68,21 +68,41 @@ Your MCP client's AI does the reasoning. No separate AI API key or trained model
 is needed. The experimental price-prediction pipeline above is independent of
 the deal tools and is not used to declare bargains.
 
+### Response size and pagination
+
+Search, shortlist, listing and comparison tools default to `view="compact"`.
+Search returns the first 10 matching rows. Set `limit` to request a different
+window. `count` is the number matching in the fetched sample and `returned_count`
+is the number shown. Pass `next_offset` as `offset` with the same search arguments
+for more rows. Each call fetches live results, so rows can move between calls.
+`truncated` describes upstream page coverage independently of the output window.
+
+Shortlists return candidates and review signals. Listing descriptions in compact
+responses are capped at 400 characters and flagged with `description_truncated`
+when shortened. Use `finn_get_listing(ad_id, view="full")` to read the complete
+seller text and photo URLs for a promising ad. `view="full"` on the original
+tool restores its detailed payload, including the search sample for shortlists.
+MCP clients can parse the JSON from `content[0].text`. Each response carries
+one copy. Clients previously reading `structuredContent.result` should use the
+text block instead. Photos are returned as MCP image content on request.
+
 ### Tools
 
+- `finn_discover_filters` — look up FINN filter values by Norwegian label for areas,
+  categories, condition, Fiks ferdig shipping, brands and seller types. Each option
+  includes its full path, upstream hit count and a reusable `finn_filters` object.
 - `finn_search` — search sale ads with price bounds, a location substring, title
   requirements/exclusions, and sorting (`RELEVANCE`, `PUBLISHED_DESC`,
   `PUBLISHED_ASC`, `PRICE_ASC`, `PRICE_DESC`). Returns listings plus the upstream
   match count, pages fetched, timestamp and `truncated` coverage indicator.
   `max_pages` is **1–5 total pages**, without automatic sharding. Unpriced ads
   are counted and skipped. Default upper asking-price bound: 1,000,000 NOK.
-- `finn_get_listing` — fetch full details for a single listing by ad id: description, all
-  photo URLs, price, condition/extras, location, availability and FINN's displayed
-  shipping/payment text. Missing seller details stay null.
+- `finn_get_listing` — inspect a listing's description, price, condition, location,
+  availability, photo count and FINN's displayed shipping/payment text.
 - `finn_get_image` — view any photo with a zero-based `image_index` (default 0).
   Detects JPEG/PNG/WebP/GIF from bytes, including extensionless FINN URLs.
-- `finn_find_deals` — produce a bounded shortlist with full listing details,
-  review signals and the search sample. Default: up to five cheap leads;
+- `finn_find_deals` — produce a bounded shortlist with seller excerpts, condition
+  and review signals. Default: up to five cheap leads;
   choose `sort="PUBLISHED_DESC"` for fresh leads. At most ten detailed candidates.
   Failed detail fetches remain visible per candidate.
 - `finn_compare_listings` — fetch 2–10 distinct ads explicitly selected by the AI
@@ -100,6 +120,15 @@ Ask your MCP assistant, for example:
 > identify specific models, then compare equivalent chairs elsewhere in Norway.
 > Check condition, included parts and photos. Explain the evidence and total-cost
 > uncertainties, and give me links to the best leads.
+
+For local shopping, call `finn_discover_filters` with
+`{"group":"location","text":"Stavanger","query":"kontorstol"}`. Choose the
+municipality from its full path and pass its `finn_filters` object to
+`finn_search` or `finn_find_deals`. FINN then searches the municipality,
+including ads whose displayed location is a neighbourhood. You can combine
+options from different groups or browse a category with an empty query.
+Discovery counts reflect the FINN query at lookup time. Price bounds and local
+title filters on a later search can reduce the number of matches.
 
 Or use a precise product query:
 
@@ -128,8 +157,8 @@ repairs and incomplete bundles can erase an apparent saving. Review signals
 quote seller phrases and need interpretation. Seller text is untrusted content,
 not instructions to the assistant.
 
-Searches are samples: title/location filters apply **after** fetching the bounded
-pages, so an empty local result is not proof that no such listing exists.
+Title terms and the free-text `location` substring apply **after** fetching
+the bounded pages, so an empty local result is not proof that no such listing exists.
 `PRICE_ASC` is useful for cheap leads, while `PUBLISHED_DESC` is useful for new
 ads. Promoted duplicates are removed. The standalone dataset pipeline retains
 its separate price-sharding method; MCP searches do not use it.
@@ -179,8 +208,8 @@ public read operations; it does not buy items or message sellers.
 ```
 
 The executable smoke script launches the stdio server, checks discovery of all
-five tools, and exercises live search, listing parsing, image retrieval, deal
-shortlisting, comparison and invalid-input handling. It makes a small number
+six tools, and exercises filter discovery, filtered search, listing parsing,
+image retrieval, deal shortlisting, comparison and invalid-input handling. It makes a small number
 of public GET requests and writes no datasets. A query with at least two current
 priced ads is required. The smoke comparison checks fetching/math, not whether
 the selected products are genuinely comparable.
